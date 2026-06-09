@@ -1,10 +1,18 @@
 """
-Polymarket data client. Read-only: no wallet, no auth, no trade submission.
-Gamma API: market discovery + prices (PUBLIC). CLOB: order book (PUBLIC read).
+Polymarket data client.
+
+Read-only access only — no wallet, no auth, no trade submission.
+- Gamma API  (https://gamma-api.polymarket.com): market discovery + prices. PUBLIC.
+- CLOB API   (https://clob.polymarket.com): order book depth for slippage estimates. PUBLIC (read).
+
+Verified May 2026: Gamma is fully public (~60 req/min). `outcomePrices` gives the
+current YES/NO implied probabilities. `clobTokenIds` maps each outcome to a CLOB
+token id you can look up in /order-book.
 """
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,9 +27,9 @@ class Market:
     id: str
     question: str
     slug: str
-    outcomes: list[str]
-    prices: list[float]
-    token_ids: list[str]
+    outcomes: list[str]                 # e.g. ["Yes", "No"]
+    prices: list[float]                 # aligned with outcomes; implied probabilities
+    token_ids: list[str]                # CLOB token id per outcome
     volume: float = 0.0
     liquidity: float = 0.0
     end_date: str | None = None
@@ -36,17 +44,8 @@ class Market:
         return self.prices[0] if self.prices else None
 
 
-def is_hedgeable(m: Market, min_liquidity: float = 500.0,
-                 price_band: tuple[float, float] = (0.03, 0.97)) -> bool:
-    if len(m.outcomes) != 2 or len(m.prices) != 2:
-        return False
-    if m.liquidity < min_liquidity:
-        return False
-    lo, hi = price_band
-    return all(lo <= p <= hi for p in m.prices)
-
-
 def _parse_market(m: dict[str, Any]) -> Market:
+    # Gamma returns several fields as JSON-encoded strings.
     def _arr(v):
         if isinstance(v, str):
             try:
@@ -77,10 +76,9 @@ class PolymarketClient:
     def __init__(self, timeout: float = 15.0):
         self._http = httpx.Client(timeout=timeout, headers={"User-Agent": "polyhedge/0.1"})
 
-    def list_markets(self, limit: int = 50, search: str | None = None) -> list[Market]:
-        params: dict[str, Any] = {"closed": "false", "active": "true",
-                                  "limit": limit, "order": "liquidity",
-                                  "ascending": "false"}
+    def list_markets(self, limit: int = 20, search: str | None = None) -> list[Market]:
+        params: dict[str, Any] = {"closed": "false", "limit": limit,
+                                  "order": "volume", "ascending": "false"}
         r = self._http.get(f"{GAMMA}/markets", params=params)
         r.raise_for_status()
         markets = [_parse_market(x) for x in r.json()]
@@ -94,39 +92,12 @@ class PolymarketClient:
         r.raise_for_status()
         return _parse_market(r.json())
 
-    def public_search(self, query: str, limit: int = 20) -> list[Market]:
-        r = self._http.get(f"{GAMMA}/public-search",
-                           params={"q": query, "limit_per_type": limit})
-        r.raise_for_status()
-        data = r.json()
-        raw_markets = data.get("markets") or []
-        for ev in data.get("events", []) or []:
-            raw_markets.extend(ev.get("markets", []) or [])
-        out: list[Market] = []
-        seen = set()
-        for m in raw_markets:
-            mid = str(m.get("id"))
-            if mid in seen:
-                continue
-            seen.add(mid)
-            out.append(_parse_market(m))
-        return out
-
-    def search(self, query: str, limit: int = 20,
-               only_hedgeable: bool = True) -> list[Market]:
-        markets: list[Market] = []
-        try:
-            markets = self.public_search(query, limit=limit)
-        except Exception:
-            markets = []
-        if not markets:
-            markets = self.list_markets(limit=100, search=query)
-        if only_hedgeable:
-            markets = [m for m in markets if is_hedgeable(m)]
-        markets.sort(key=lambda m: m.liquidity, reverse=True)
-        return markets
+    def search(self, query: str, limit: int = 50) -> list[Market]:
+        """Pull a wider list then filter client-side (Gamma search is fuzzy)."""
+        return self.list_markets(limit=limit, search=query)
 
     def order_book(self, token_id: str) -> dict[str, Any]:
+        """Live book for one outcome token. Used to estimate fill slippage."""
         r = self._http.get(f"{CLOB}/order-book", params={"token_id": token_id})
         r.raise_for_status()
         return r.json()
