@@ -96,6 +96,26 @@ def compute_hedge(pos: Position, hedge_price: float,
     win, lose = _combined(pos, x, hedge_price)
     cost = x * hedge_price
 
+    # --- Cost-to-loss ratio guardrail ---
+    # The most you can lose unhedged is pos.cost. If the hedge costs more than
+    # the loss it removes, buying protection is irrational. Catch this even when
+    # hedge_price < 0.90.
+    MAX_COST_TO_LOSS_RATIO = 1.0
+    protected_loss = pos.cost
+    if protected_loss > 0 and cost > protected_loss * MAX_COST_TO_LOSS_RATIO:
+        ratio = cost / protected_loss
+        return HedgePlan(
+            hedge_side=hedge_side, hedge_price=hedge_price,
+            hedge_shares=0.0, hedge_cost=0.0,
+            pnl_if_original_wins=round(pos.pnl_if_win(), 2),
+            pnl_if_original_loses=round(pos.pnl_if_lose(), 2),
+            intent=intent,
+            note=(f"Hedging this position would cost ${cost:.2f} to protect a "
+                  f"maximum loss of ${protected_loss:.2f} - about {ratio:.1f}x the "
+                  "risk it removes. The protection costs more than the downside, "
+                  "so hedging is not worth it here."),
+        )
+
     note = ""
     if win < 0 and lose < 0:
         note = ("Both outcomes net a loss; the hedge price is too rich to break "
