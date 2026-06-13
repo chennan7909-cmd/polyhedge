@@ -27,6 +27,13 @@ class Direction(str, Enum):
     UNKNOWN = "unknown"
 
 
+class Relationship(str, Enum):
+    SAME_MARKET = "same_market"
+    COMPATIBLE_CROSS_MARKET = "compatible_cross"
+    RELATED_NOT_HEDGE = "related_not_hedge"
+    REJECTED = "rejected"
+
+
 _ASSETS = {
     "BTC": ("bitcoin", "btc"),
     "ETH": ("ethereum", "eth"),
@@ -109,3 +116,42 @@ def parse_market(market: Market) -> MarketStructure:
         market=market, asset=asset, threshold=threshold,
         direction=direction, settlement=settlement, window=window,
     )
+
+
+def classify_relationship(position: MarketStructure,
+                          candidate: MarketStructure) -> tuple[Relationship, str]:
+    """Decide whether `candidate` can hedge `position`, and why.
+
+    Four-dimension check: same asset, compatible settlement, same time window,
+    and opposite payoff direction. Settlement is checked before the window
+    label because a touch-vs-expiry mismatch is the more fundamental basis risk.
+    """
+    p, c = position, candidate
+
+    if p.market.id == c.market.id:
+        return Relationship.SAME_MARKET, "same market, opposite side: exact binary hedge"
+
+    if p.asset is None or c.asset is None or p.asset != c.asset:
+        return Relationship.REJECTED, f"asset mismatch: {p.asset} vs {c.asset}"
+
+    if p.threshold is None or c.threshold is None:
+        return Relationship.REJECTED, "threshold unparseable on one side"
+    if Direction.UNKNOWN in (p.direction, c.direction):
+        return Relationship.REJECTED, "direction unparseable on one side"
+    if Settlement.UNKNOWN in (p.settlement, c.settlement):
+        return Relationship.REJECTED, "settlement unparseable on one side"
+
+    if p.settlement != c.settlement:
+        return (Relationship.REJECTED,
+                f"settlement mismatch ({p.settlement.value} vs {c.settlement.value}): "
+                "this is basis risk -- the markets resolve on different conditions")
+
+    if p.window and c.window and p.window != c.window:
+        return Relationship.REJECTED, f"time-window mismatch: {p.window} vs {c.window}"
+
+    if p.direction == c.direction:
+        return (Relationship.RELATED_NOT_HEDGE,
+                "same payoff direction: correlated exposure, not an offsetting hedge")
+
+    return (Relationship.COMPATIBLE_CROSS_MARKET,
+            "opposite direction with matching asset, window, and settlement")
