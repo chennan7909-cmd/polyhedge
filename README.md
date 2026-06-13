@@ -1,3 +1,6 @@
+> **Live demo:** https://polyhedge.streamlit.app
+> **On-chain contract (Base Sepolia):** [`0x6bAeCb1b31Bb340D0C85762a11c3202A7F8087dE`](https://sepolia.basescan.org/address/0x6bAeCb1b31Bb340D0C85762a11c3202A7F8087dE)
+
 # PolyHedge — Agentic Hedging Tool for Polymarket
 
 An AI risk officer for prediction-market positions. Tell it the position you're
