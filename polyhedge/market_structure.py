@@ -146,6 +146,14 @@ def classify_relationship(position: MarketStructure,
                 f"settlement mismatch ({p.settlement.value} vs {c.settlement.value}): "
                 "this is basis risk -- the markets resolve on different conditions")
 
+    p_src = (p.market.raw or {}).get("resolution_source")
+    c_src = (c.market.raw or {}).get("resolution_source")
+    if p_src and c_src and p_src != c_src:
+        return (Relationship.REJECTED,
+                f"resolution-source mismatch ({p_src} vs {c_src}): basis risk -- "
+                "the same price can trigger at different moments across venues, "
+                "and USD vs USDT diverge if the peg breaks")
+
     if p.window and c.window and p.window != c.window:
         return Relationship.REJECTED, f"time-window mismatch: {p.window} vs {c.window}"
 
