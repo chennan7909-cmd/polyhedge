@@ -21,10 +21,20 @@ class Position:
     side: Side
     shares: float
     avg_price: float
+    mark_price: float = 0.0  # current market price; 0 means "same as avg_price"
 
     @property
     def cost(self) -> float:
         return self.shares * self.avg_price
+
+    @property
+    def mark(self) -> float:
+        return self.mark_price if self.mark_price > 0 else self.avg_price
+
+    @property
+    def unrealized_pnl(self) -> float:
+        # Paper gain/loss if you sold at the current market price now.
+        return self.shares * (self.mark - self.avg_price)
 
     def pnl_if_win(self) -> float:
         return self.shares * (1 - self.avg_price)
@@ -158,3 +168,57 @@ def narrate(pos: Position, plan: HedgePlan) -> str:
     if plan.note:
         lines.append(f"NOTE: {plan.note}")
     return "\n".join(lines)
+
+
+
+def compute_lock_profit_hedge(pos: Position, hedge_price: float) -> HedgePlan:
+    """Lock in an unrealized gain by buying the opposite side.
+
+    Use when the position's mark price is above its cost: the holder is up on
+    paper and wants to secure that gain regardless of outcome. We size the hedge
+    so the two outcomes are balanced, then report the locked result. If the
+    locked result is not positive, we honestly say it is not worth it yet.
+    """
+    if not (0 < hedge_price < 1):
+        raise ValueError("hedge_price must be between 0 and 1")
+
+    hedge_side = Side.NO if pos.side == Side.YES else Side.YES
+    n = pos.shares
+
+    # Payoff if original wins:  n*(1-avg) - x*hedge_price
+    # Payoff if original loses: -n*avg   + x*(1-hedge_price)
+    # Set equal and solve for x to balance both outcomes:
+    #   n*(1-avg) - x*hp = -n*avg + x*(1-hp)
+    #   n*(1-avg) + n*avg = x*(1-hp) + x*hp
+    #   n = x   ->  balanced hedge buys x shares solving below
+    # Solve generally:
+    x = (n * (1 - pos.avg_price) + n * pos.avg_price) / 1.0  # = n
+    # The balanced quantity is n; locked value is symmetric. Compute both ends.
+    x = n
+    cost = x * hedge_price
+    win = n * (1 - pos.avg_price) - x * hedge_price
+    lose = -n * pos.avg_price + x * (1 - hedge_price)
+    locked = min(win, lose)
+
+    if locked <= 0:
+        return HedgePlan(
+            hedge_side=hedge_side, hedge_price=hedge_price,
+            hedge_shares=0.0, hedge_cost=0.0,
+            pnl_if_original_wins=round(pos.pnl_if_win(), 2),
+            pnl_if_original_loses=round(pos.pnl_if_lose(), 2),
+            intent=Intent.LOCK_PROFIT,
+            note=("Locking now would not secure a positive result yet: the market "
+                  "has not moved far enough above your cost to lock a gain. Hold, or "
+                  "wait for a better price."),
+        )
+
+    return HedgePlan(
+        hedge_side=hedge_side, hedge_price=hedge_price,
+        hedge_shares=round(x, 2), hedge_cost=round(cost, 2),
+        pnl_if_original_wins=round(win, 2),
+        pnl_if_original_loses=round(lose, 2),
+        intent=Intent.LOCK_PROFIT,
+        note=(f"You're up ${pos.unrealized_pnl:.2f} on paper. Buying {x:g} "
+              f"{hedge_side.value} shares @ ${hedge_price:.2f} locks in ${locked:.2f} "
+              "no matter how it resolves. You give up further upside to bank the gain."),
+    )
